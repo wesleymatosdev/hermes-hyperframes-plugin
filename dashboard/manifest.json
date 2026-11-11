@@ -1,0 +1,14 @@
+{
+  "name": "hermes-hyperframes",
+  "label": "Hyperframes",
+  "description": "Hyperframes composition control — project switching, Studio preview, frame snapshots, and a chat panel to the Hermes agent",
+  "icon": "Clapperboard",
+  "version": "0.3.0",
+  "tab": {
+    "path": "/hyperframes",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

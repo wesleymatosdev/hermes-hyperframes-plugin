@@ -1,0 +1,24 @@
+name: hermes-hyperframes
+version: "0.3.0"
+description: "hyperframes_* — drive Hyperframes (Apache-2.0 HTML video compositions) from Hermes: managed Studio preview lifecycle, lint, timeline readback, frame snapshots for visual verification, Studio-selection context bridge, and MP4 render. Wraps a pinned local hyperframes CLI (no npx); bin resolution: HERMES_HYPERFRAMES_BIN > PATH > <project>/node_modules/.bin/hyperframes."
+author: "Wesley Matos"
+provides_tools:
+  - hyperframes_lint
+  - hyperframes_preview
+  - hyperframes_preview_context
+  - hyperframes_timeline
+  - hyperframes_snapshot
+  - hyperframes_render
+config_schema:
+  projects_roots:
+    type: list
+    default: ["~/projects/personal", "~/projects/clients"]
+    description: Directories the dashboard tab scans (depth 1) for hyperframes projects — a dir qualifies when it has index.html with data-composition-id and node_modules/.bin/hyperframes
+  api_server_key:
+    type: str
+    default: ""
+    description: OVERRIDE ONLY — the native chat lane auto-derives API_SERVER_KEY from the Hermes home .env and its URL from gateway_state.json; paste a key here only for a non-standard setup. Without any credential the tab falls back to a local `hermes chat -q` per message (slow)
+  api_server_url:
+    type: str
+    default: ""
+    description: OVERRIDE ONLY — gateway api_server base URL for the native chat lane; empty auto-derives from gateway_state.json (loopback 8642 default)
