@@ -1,5 +1,5 @@
 name: hermes-hyperframes
-version: "0.3.0"
+version: "0.3.1"
 description: "hyperframes_* — drive Hyperframes (Apache-2.0 HTML video compositions) from Hermes: managed Studio preview lifecycle, lint, timeline readback, frame snapshots for visual verification, Studio-selection context bridge, and MP4 render. Wraps a pinned local hyperframes CLI (no npx); bin resolution: HERMES_HYPERFRAMES_BIN > PATH > <project>/node_modules/.bin/hyperframes."
 author: "Wesley Matos"
 provides_tools:

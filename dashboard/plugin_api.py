@@ -597,7 +597,12 @@ def _composition_context() -> str:
 
 
 def send_message(text: str) -> dict:
-    """Route one chat message through the best configured lane; persist history."""
+    """Run one chat turn through the best configured lane; persist history.
+
+    The heavy path, shared by the async route's worker thread (and tests):
+    a real agent turn takes 1-5 minutes, so POST /messages never runs this
+    inline — it queues onto ``_CHAT_EXECUTOR`` and returns immediately.
+    """
     text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=422, detail=_error_detail(
@@ -625,8 +630,78 @@ def send_message(text: str) -> dict:
     return {"ok": True, "lane": lane, "sessionId": session_id, "reply": reply}
 
 
+# ---------------------------------------------------------------------------
+# Async turn plumbing: the SERVER owns the turn, not the fetch.
+#
+# A real agent turn is 1-5 minutes; a synchronous POST looks dead through any
+# proxy and orphans the UI on reload. POST /messages accepts (202) and runs
+# the turn on a dedicated single-worker executor; GET /chat/status exposes
+# the server-side state so any page (reload included) can resume waiting.
+# One in-flight turn per pinned session: the 409 rejection IS the dedupe.
+# ---------------------------------------------------------------------------
+
+_CHAT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hf-chat")
+_CHAT_LOCK = threading.Lock()
+_CHAT_STATE: dict = {"pending": False, "queuedAt": None, "startedAt": None,
+                     "sessionId": "", "lastError": None}
+
+
+def _chat_status_payload() -> dict:
+    with _CHAT_LOCK:
+        return {"pending": bool(_CHAT_STATE["pending"]),
+                "queuedAt": _CHAT_STATE["queuedAt"],
+                "startedAt": _CHAT_STATE["startedAt"],
+                "sessionId": _CHAT_STATE["sessionId"] or chat_session_id(),
+                "lane": chat_lane(),
+                "lastError": _CHAT_STATE["lastError"]}
+
+
+def _run_turn_stateful(text: str) -> None:
+    """Worker body: run one turn, always clearing the pending flag."""
+    with _CHAT_LOCK:
+        _CHAT_STATE["startedAt"] = time.time()
+    try:
+        result = send_message(text)
+        with _CHAT_LOCK:
+            _CHAT_STATE["sessionId"] = str(result.get("sessionId") or _CHAT_STATE["sessionId"])
+    except Exception as exc:  # a failed turn is a typed status, never a hang
+        detail = getattr(exc, "detail", None)
+        error = detail if isinstance(detail, dict) else _error_detail(
+            "turn_failed", str(exc) or type(exc).__name__, retryable=False)
+        with _CHAT_LOCK:
+            _CHAT_STATE["lastError"] = error
+    finally:
+        with _CHAT_LOCK:
+            _CHAT_STATE["pending"] = False
+
+
+def queue_message(text: str) -> dict:
+    """Accept one message for the async turn; dedupe on the pending flag."""
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail=_error_detail(
+            "validation", "Message must not be empty", retryable=False))
+    with _CHAT_LOCK:
+        if _CHAT_STATE["pending"]:
+            raise HTTPException(status_code=409, detail=_error_detail(
+                "turn_in_progress",
+                "the agent is already working on your previous message",
+                retryable=False))
+        _CHAT_STATE.update(pending=True, queuedAt=time.time(),
+                           startedAt=None, lastError=None)
+    _CHAT_EXECUTOR.submit(_run_turn_stateful, text)
+    return {"status": "accepted", "sessionId": chat_session_id(),
+            "queuedAt": _CHAT_STATE["queuedAt"]}
+
+
 def reset_session() -> dict:
     """Start a fresh pinned session: drop the id and the stored history rows."""
+    with _CHAT_LOCK:
+        if _CHAT_STATE["pending"]:
+            raise HTTPException(status_code=409, detail=_error_detail(
+                "turn_in_progress",
+                "wait for the agent to finish the current message first",
+                retryable=False))
     old = chat_session_id()
     kv_delete("chat_session_id")
     with _DB_LOCK, _db() as conn:
@@ -877,9 +952,19 @@ def messages():
     return messages_payload()
 
 
-@router.post("/messages")
+@router.post("/messages", status_code=202)
 def messages_send(body: MessageBody):
-    return send_message(body.text)
+    """Accept one message; the gateway turn runs server-side (202 immediately).
+
+    A real agent turn is 1-5 minutes — the fetch must not carry it. The UI
+    polls GET /chat/status; a reload resumes waiting from server state.
+    """
+    return queue_message(body.text)
+
+
+@router.get("/chat/status")
+def chat_status():
+    return _chat_status_payload()
 
 
 @router.post("/messages/reset")

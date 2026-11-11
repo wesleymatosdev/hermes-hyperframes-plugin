@@ -148,7 +148,31 @@
 
   function PreviewPanel(props) {
     const st = props.status || {};
-    return h("div", { className: "hf-preview" },
+    const wrapRef = useRef(null);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+
+    // Fullscreen the whole preview wrapper (controls + iframe), not just the
+    // iframe element — the Studio's own fullscreen button also works now that
+    // the iframe delegates fullscreen permission (allow includes "fullscreen"
+    // + allowFullscreen, verified: without them requestFullscreen() inside
+    // the iframe was silently refused by the browser).
+    useEffect(function () {
+      function onChange() {
+        setIsFullscreen(document.fullscreenElement === wrapRef.current);
+      }
+      document.addEventListener("fullscreenchange", onChange);
+      return function () { document.removeEventListener("fullscreenchange", onChange); };
+    }, []);
+
+    const toggleFullscreen = useCallback(function () {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(function () { /* leaving anyway */ });
+      } else if (wrapRef.current && wrapRef.current.requestFullscreen) {
+        wrapRef.current.requestFullscreen().catch(function (_e) { /* refused */ });
+      }
+    }, []);
+
+    return h("div", { className: "hf-preview" + (isFullscreen ? " hf-preview-fullscreen" : ""), ref: wrapRef },
       h("div", { className: "hf-preview-controls" },
         h("button", {
           className: "hf-btn hf-btn-primary",
@@ -159,13 +183,20 @@
           className: "hf-btn hf-btn-ghost",
           disabled: props.busy,
           onClick: function () { props.onAction("stop"); },
-        }, "Stop")),
+        }, "Stop"),
+        h("span", { className: "hf-spacer" }),
+        h("button", {
+          className: "hf-btn hf-btn-ghost",
+          onClick: toggleFullscreen,
+          title: isFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen the preview",
+        }, isFullscreen ? "Exit fullscreen" : "Fullscreen")),
       st.running && st.studioUrl
         ? h("iframe", {
             className: "hf-frame",
             src: st.studioUrl,
             title: "Hyperframes Studio preview",
-            allow: "clipboard-write",
+            allow: "clipboard-write; fullscreen",
+            allowFullscreen: true,
           })
         : h("div", { className: "hf-frame hf-frame-empty" },
             h("div", { className: "hf-frame-empty-text" },
@@ -176,13 +207,23 @@
 
   // --- Chat panel -----------------------------------------------------------------
 
+  // A real agent turn takes 1-5 minutes; the POST only ACCEPTS the message
+  // (202) and the server runs the turn. This panel polls /chat/status until
+  // the turn settles — so progress is visible, a page reload resumes waiting
+  // from server state, and nothing is ever stuck on "Sending…".
+  const CHAT_POLL_MS = 2000;
+  // Stop polling well past the server-side turn timeout (300s): the turn may
+  // still complete server-side, but this tab stops spinning and says so.
+  const CHAT_POLL_CAP_MS = 330000;
+
   function ChatPanel(props) {
     const [messages, setMessages] = useState(null);
     const [input, setInput] = useState("");
-    const [sending, setSending] = useState(false);
     const [err, setErr] = useState("");
     const [lane, setLane] = useState("");
     const [sessionId, setSessionId] = useState("");
+    const [turn, setTurn] = useState(null); // {queuedAt, text} while a turn is in flight
+    const [elapsed, setElapsed] = useState(0);
     const scrollRef = useRef(null);
 
     const load = useCallback(function () {
@@ -193,40 +234,85 @@
       }).catch(function (e) { setErr(errorMessage(e)); });
     }, []);
 
-    useEffect(function () { load(); }, [load]);
+    // Reload history + resume a pending turn on mount (a page reload mid-turn
+    // lands here: the turn lives server-side, not in this fetch).
+    useEffect(function () {
+      load();
+      authedFetchJson(API + "/chat/status").then(function (st) {
+        if (st && st.pending) setTurn({ queuedAt: st.queuedAt || Date.now() / 1000, text: "" });
+      }).catch(function (_e) { /* status is optional surface */ });
+    }, [load]);
+
+    // The server-side turn watcher: one interval while a turn is pending.
+    useEffect(function () {
+      if (!turn) return undefined;
+      const started = Date.now();
+      const tick = window.setInterval(function () {
+        setElapsed(Math.round((Date.now() - started) / 1000));
+      }, 1000);
+      const poll = window.setInterval(function () {
+        authedFetchJson(API + "/chat/status").then(function (st) {
+          if (Date.now() - started > CHAT_POLL_CAP_MS) {
+            window.clearInterval(poll); window.clearInterval(tick);
+            setTurn(null);
+            setErr("The agent is still working — this turn is taking unusually long. " +
+                   "Reload in a moment; the reply will appear here once it lands.");
+            return;
+          }
+          if (st && !st.pending) {
+            window.clearInterval(poll); window.clearInterval(tick);
+            setTurn(null);
+            if (st.lastError && st.lastError.message) {
+              setErr(String(st.lastError.message));
+            }
+            load();
+          }
+        }).catch(function (_e) { /* transient poll failures keep the wait alive */ });
+      }, CHAT_POLL_MS);
+      return function () { window.clearInterval(poll); window.clearInterval(tick); };
+    }, [turn, load]);
 
     useEffect(function () {
       const el = scrollRef.current;
       if (el) el.scrollTop = el.scrollHeight;
-    }, [messages]);
+    }, [messages, turn, elapsed]);
 
     const send = useCallback(function () {
       const text = input.trim();
-      if (!text || sending) return;
-      setSending(true); setErr("");
+      if (!text || turn) return;
+      setErr("");
       setInput("");
-      // Optimistic user bubble; the reload after the reply replaces history.
+      // Optimistic user bubble; the post-turn history reload replaces it with
+      // the persisted rows (user + assistant).
       setMessages(function (prev) {
         const base = Array.isArray(prev) ? prev : [];
         return base.concat([{ role: "user", text: text, pending: true }]);
       });
+      setTurn({ queuedAt: Date.now() / 1000, text: text });
       postJson(API + "/messages", { text: text })
-        .then(function (_d) { return load(); })
         .catch(function (e) {
+          // Not accepted: give the text back and stop the wait. A 409
+          // turn_in_progress means the previous turn is still running.
+          setTurn(null);
+          setMessages(function (prev) {
+            const base = Array.isArray(prev) ? prev : [];
+            return base.filter(function (m) { return !(m.pending && m.text === text); });
+          });
+          setInput(text);
           setErr(errorMessage(e));
-          setInput(text);  // give the text back — an honest failed send
-          return load();
-        })
-        .finally(function () { setSending(false); });
-    }, [input, sending, load]);
+        });
+    }, [input, turn]);
 
     const reset = useCallback(function () {
-      setSending(true); setErr("");
+      if (turn) return;
+      setErr("");
       postJson(API + "/messages/reset", {})
         .then(function () { return load(); })
-        .catch(function (e) { setErr(errorMessage(e)); })
-        .finally(function () { setSending(false); });
-    }, [load]);
+        .catch(function (e) { setErr(errorMessage(e)); });
+    }, [turn, load]);
+
+    const working = !!turn;
+    const turnErrorIsBusy = /turn_in_progress/.test(err);
 
     return h("div", { className: "hf-chat" },
       h("div", { className: "hf-chat-head" },
@@ -240,14 +326,18 @@
         sessionId ? h("span", { className: "hf-session-id", title: "Pinned Hermes session — resumable: hermes chat --resume " + sessionId }, sessionId) : null,
         h("span", { className: "hf-spacer" }),
         h("button", {
-          className: "hf-btn hf-btn-ghost", onClick: reset, disabled: sending,
-          title: "Start a fresh Hermes session (clears this tab's chat history)",
+          className: "hf-btn hf-btn-ghost", onClick: reset, disabled: working,
+          title: working
+            ? "Wait for the agent to finish the current message first"
+            : "Start a fresh Hermes session (clears this tab's chat history)",
         }, "New session")),
-      err ? h("div", { className: "hf-banner hf-banner-error" }, err) : null,
+      err ? h("div", {
+        className: "hf-banner hf-banner-error" + (turnErrorIsBusy ? " hf-banner-warn" : ""),
+      }, turnErrorIsBusy ? "The agent is already working on your previous message — wait for it to finish, then send again." : err) : null,
       h("div", { className: "hf-chat-log", ref: scrollRef },
         messages === null
           ? h("div", { className: "hf-chat-empty" }, "Loading chat…")
-          : messages.length === 0
+          : messages.length === 0 && !working
             ? h("div", { className: "hf-chat-empty" },
                 "Message the Hermes agent about this composition.",
                 lane === "cli"
@@ -260,15 +350,25 @@
                 },
                   h("div", { className: "hf-msg-role" }, m.role === "user" ? "You" : "Agent"),
                   h("div", { className: "hf-msg-text" }, m.text));
-              })),
+              }).concat(working ? [
+                // The live turn marker: visible interaction while the agent
+                // works — the thing a dead "Sending…" button never gave.
+                h("div", { key: "hf-turn-marker", className: "hf-msg hf-msg-agent hf-msg-working" },
+                  h("div", { className: "hf-msg-role" }, "Agent"),
+                  h("div", { className: "hf-msg-text hf-msg-working-text" },
+                    "Working… ", h("span", { className: "hf-turn-elapsed" }, elapsed + "s"),
+                    h("span", { className: "hf-turn-note" }, "  (a real agent turn; this can take a few minutes)"))),
+              ] : [])),
       h("div", { className: "hf-chat-input-row" },
         h("textarea", {
           className: "hf-chat-input", rows: 2,
-          placeholder: props.hasProject
-            ? "Ask the agent about this composition…"
-            : "Ask the agent… (select a project for composition context)",
+          placeholder: working
+            ? "The agent is working on your previous message…"
+            : (props.hasProject
+              ? "Ask the agent about this composition…"
+              : "Ask the agent… (select a project for composition context)"),
           value: input,
-          disabled: sending,
+          disabled: working,
           onChange: function (e) { setInput(e.target.value); },
           onKeyDown: function (e) {
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -276,9 +376,11 @@
         }),
         h("button", {
           className: "hf-btn hf-btn-primary hf-chat-send",
-          onClick: send, disabled: sending || !input.trim(),
-          title: "Send (one agent turn in the pinned Hermes session)",
-        }, sending ? "Sending…" : "Send")));
+          onClick: send, disabled: working || !input.trim(),
+          title: working
+            ? "The agent is still working on the previous message"
+            : "Send (one agent turn in the pinned Hermes session)",
+        }, working ? "Working…" : "Send")));
   }
 
   // --- Page ---------------------------------------------------------------------

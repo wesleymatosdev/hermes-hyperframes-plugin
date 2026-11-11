@@ -16,7 +16,7 @@ from support import DashboardTestBase, DASHBOARD_DIR, REPO_ROOT
 
 class ManifestVersionTests(DashboardTestBase):
     def test_version_read_from_manifest_next_to_module(self) -> None:
-        self.assertEqual(self.api.PLUGIN_VERSION, "0.3.0")
+        self.assertEqual(self.api.PLUGIN_VERSION, "0.3.1")
 
     def test_broken_manifest_yields_empty_version_not_crash(self) -> None:
         import shutil

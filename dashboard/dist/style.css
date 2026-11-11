@@ -149,6 +149,18 @@
   background: var(--color-card-subtle, var(--color-card));
 }
 
+/* Fullscreen: the wrapper fills the screen and the frame follows it */
+.hf-preview-fullscreen:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  padding: 0.55rem;
+  background: var(--color-card);
+}
+.hf-preview-fullscreen:fullscreen .hf-frame {
+  height: calc(100vh - 3.2rem);
+  flex: 1;
+}
+
 .hf-frame-empty {
   display: flex;
   align-items: center;
@@ -248,6 +260,23 @@
 }
 .hf-msg-pending .hf-msg-text { opacity: 0.6; }
 
+/* Live-turn marker: pulses so the wait reads as work in progress, not a hang */
+.hf-msg-working .hf-msg-text {
+  animation: hf-working-pulse 1.6s ease-in-out infinite;
+}
+.hf-turn-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.hf-turn-note {
+  color: var(--color-muted-foreground);
+  font-size: 0.78rem;
+}
+@keyframes hf-working-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 .hf-chat-input-row {
   display: flex;
   align-items: flex-end;
@@ -285,6 +314,12 @@
   background: color-mix(in srgb, var(--color-destructive, transparent) 9%, transparent);
 }
 .hf-banner-reload {
+  color: var(--color-warning, var(--color-foreground));
+  border-color: color-mix(in srgb, var(--color-warning, var(--color-border)) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning, transparent) 9%, transparent);
+}
+/* A busy-state notice (409 turn_in_progress) is informational, not an error */
+.hf-banner-warn {
   color: var(--color-warning, var(--color-foreground));
   border-color: color-mix(in srgb, var(--color-warning, var(--color-border)) 45%, var(--color-border));
   background: color-mix(in srgb, var(--color-warning, transparent) 9%, transparent);
