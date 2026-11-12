@@ -30,7 +30,7 @@ class HealthTests(RouteTestsBase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["plugin_version"], "0.3.1")
+        self.assertEqual(body["plugin_version"], "0.3.2")
 
 
 class ProjectRouteTests(RouteTestsBase):

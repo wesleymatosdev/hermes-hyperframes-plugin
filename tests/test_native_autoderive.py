@@ -1,11 +1,11 @@
-"""Native chat-lane auto-derivation (feedback round 2).
+"""Native chat-lane auto-derivation (feedback round 2) + secret-scope API
+(feedback round 3, catalog review on d49838bc).
 
-RED-first: on a machine with a running gateway, the plugin must resolve the
-native lane with ZERO manual configuration — URL from
-``<home>/gateway_state.json`` (platforms.api_server.listener_base) and the
-key from ``<home>/.env`` API_SERVER_KEY (dotenv-style). Plugin settings and
-env keep precedence for other machines. These tests fail against the old
-resolution order (settings + env only).
+The plugin must resolve the native lane with ZERO manual configuration — URL
+from ``<home>/gateway_state.json`` (platforms.api_server.listener_base) and
+the key through Hermes's secret API (``agent.secret_scope.get_secret``).
+Plugin settings and env keep precedence for other machines. The key is NEVER
+parsed out of ``.env`` by hand anymore — that test fails against v0.3.1.
 """
 
 from __future__ import annotations
@@ -36,9 +36,23 @@ class AutoDeriveTests(DashboardTestBase):
             f'{key}="{value}"\n',
             encoding="utf-8")
 
-    def test_key_derives_from_home_dotenv_without_settings_or_env(self) -> None:
+    def test_key_derives_through_hermes_secret_scope(self) -> None:
+        """The sanctioned path: agent.secret_scope (what the gateway installs
+        from the profile .env / process env — the plugin never reads .env)."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        token = set_secret_scope({"API_SERVER_KEY": "scoped-secret"})
+        try:
+            self.assertEqual(self.api.api_server_key(), "scoped-secret")
+        finally:
+            reset_secret_scope(token)
+
+    def test_dotenv_is_never_parsed_by_hand(self) -> None:
+        """A .env file alone must NOT satisfy the lane anymore: without the
+        Hermes secret scope (or an explicit setting/env override) there is no
+        credential. This fails against v0.3.1, which parsed .env directly."""
         self._write_dotenv("API_SERVER_KEY", "auto-derived-secret")
-        self.assertEqual(self.api.api_server_key(), "auto-derived-secret")
+        self.assertEqual(self.api.api_server_key(), "")
 
     def test_url_derives_from_gateway_state_listener_base(self) -> None:
         self._write_gateway_state("http://127.0.0.1:8777")
@@ -61,9 +75,16 @@ class AutoDeriveTests(DashboardTestBase):
 
     def test_lane_is_native_with_zero_configuration(self) -> None:
         self._write_gateway_state("http://127.0.0.1:8642")
-        self._write_dotenv("API_SERVER_KEY", "auto-derived-secret")
-        # No env, no settings — the lane resolver must still pick native.
-        self.assertEqual(self.api.health()["lane"], "native")
+        # Zero manual config: the credential arrives the way the running
+        # gateway supplies it — through the profile secret scope (built from
+        # the profile .env / process env by Hermes itself).
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        token = set_secret_scope({"API_SERVER_KEY": "auto-derived-secret"})
+        try:
+            self.assertEqual(self.api.health()["lane"], "native")
+        finally:
+            reset_secret_scope(token)
 
     def test_send_routes_native_without_configuration(self) -> None:
         def handler(request, payload):
@@ -77,13 +98,16 @@ class AutoDeriveTests(DashboardTestBase):
         from support import make_gateway_stub
 
         base_url, shutdown = make_gateway_stub(handler)
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        token = set_secret_scope({"API_SERVER_KEY": "derived-key"})
         try:
             self._write_gateway_state(base_url)
-            self._write_dotenv("API_SERVER_KEY", "derived-key")
             out = self.api.send_message("are you there?")
             self.assertEqual(out["lane"], "native")
             self.assertEqual(out["reply"], "real reply")
         finally:
+            reset_secret_scope(token)
             shutdown()
 
 

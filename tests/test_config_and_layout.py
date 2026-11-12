@@ -16,7 +16,7 @@ from support import DashboardTestBase, DASHBOARD_DIR, REPO_ROOT
 
 class ManifestVersionTests(DashboardTestBase):
     def test_version_read_from_manifest_next_to_module(self) -> None:
-        self.assertEqual(self.api.PLUGIN_VERSION, "0.3.1")
+        self.assertEqual(self.api.PLUGIN_VERSION, "0.3.2")
 
     def test_broken_manifest_yields_empty_version_not_crash(self) -> None:
         import shutil
@@ -128,7 +128,8 @@ class ToolsModuleLayoutTests(unittest.TestCase):
             (root / "dashboard" / "dist").mkdir(parents=True)
             (root / "dashboard" / "manifest.json").write_text(
                 json.dumps({"version": "9.9.9"}), encoding="utf-8")
-            shutil.copy(REPO_ROOT / "plugin" / "__init__.py", root / "__init__.py")
+            # The repo ships the tools at the root now (no plugin/ subdir).
+            shutil.copy(REPO_ROOT / "__init__.py", root / "__init__.py")
             shutil.copy(REPO_ROOT / "dashboard" / "plugin_api.py",
                         root / "dashboard" / "plugin_api.py")
             module = self._import_from_layout(root / "dashboard")

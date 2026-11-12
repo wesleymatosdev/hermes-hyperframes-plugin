@@ -77,6 +77,11 @@ elif cmd == "snapshot":
     contact.write_bytes(png)
     for p in paths + [str(contact)]:
         print(p)
+elif cmd == "render":
+    out = Path(args[args.index("--output") + 1])
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(b"FAKE-MP4-DATA")
+    print(json.dumps({"ok": True, "output": str(out)}))
 else:
     print("stub: unknown command %r" % cmd, file=sys.stderr)
     raise SystemExit(2)

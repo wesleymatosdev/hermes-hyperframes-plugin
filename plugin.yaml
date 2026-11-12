@@ -1,6 +1,6 @@
 name: hermes-hyperframes
-version: "0.3.1"
-description: "hyperframes_* — drive Hyperframes (Apache-2.0 HTML video compositions) from Hermes: managed Studio preview lifecycle, lint, timeline readback, frame snapshots for visual verification, Studio-selection context bridge, and MP4 render. Wraps a pinned local hyperframes CLI (no npx); bin resolution: HERMES_HYPERFRAMES_BIN > PATH > <project>/node_modules/.bin/hyperframes."
+version: "0.3.2"
+description: "hyperframes_* — drive Hyperframes (Apache-2.0 HTML video compositions) from Hermes: managed Studio preview lifecycle, lint, timeline readback, frame snapshots for visual verification, Studio-selection context bridge, and MP4 render. Wraps a pinned local hyperframes CLI (no npx); project dirs must sit under projects_roots (the project-local node_modules/.bin/hyperframes runs on the host); the CLI subprocess gets a minimal environment; render output stays inside the project dir."
 author: "Wesley Matos"
 provides_tools:
   - hyperframes_lint
@@ -13,12 +13,24 @@ config_schema:
   projects_roots:
     type: list
     default: ["~/projects/personal", "~/projects/clients"]
-    description: Directories the dashboard tab scans (depth 1) for hyperframes projects — a dir qualifies when it has index.html with data-composition-id and node_modules/.bin/hyperframes
+    description: ALLOWLIST — the only dirs the hyperframes_* tools and the dashboard tab may touch (the project-local node_modules/.bin/hyperframes runs on the host, so anything outside these roots is refused). The dashboard scans these roots (depth 1) for projects (index.html with data-composition-id and node_modules/.bin/hyperframes)
   api_server_key:
     type: str
     default: ""
-    description: OVERRIDE ONLY — the native chat lane auto-derives API_SERVER_KEY from the Hermes home .env and its URL from gateway_state.json; paste a key here only for a non-standard setup. Without any credential the tab falls back to a local `hermes chat -q` per message (slow)
+    description: OVERRIDE ONLY — the native chat lane auto-derives API_SERVER_KEY through Hermes's secret API (agent.secret_scope.get_secret) and its URL from gateway_state.json; paste a key here only for a non-standard setup. Without any credential the tab falls back to a local `hermes chat -q` per message (slow)
   api_server_url:
     type: str
     default: ""
     description: OVERRIDE ONLY — gateway api_server base URL for the native chat lane; empty auto-derives from gateway_state.json (loopback 8642 default)
+  bin:
+    type: str
+    default: ""
+    description: OPTIONAL — absolute path to the hyperframes CLI binary; overrides the PATH lookup and the per-project node_modules/.bin fallback (same precedence as the old HERMES_HYPERFRAMES_BIN env)
+  project:
+    type: str
+    default: ""
+    description: OPTIONAL — default hyperframes project dir for the tools when a call omits project_dir (must still sit under projects_roots); same role as the old HERMES_HYPERFRAMES_PROJECT env
+  env_passthrough:
+    type: list
+    default: []
+    description: OPTIONAL — names of extra env vars the CLI subprocess may inherit. The subprocess env is minimal by default (PATH, HOME, locale, TMPDIR); never pass wildcards or provider keys here

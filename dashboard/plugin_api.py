@@ -225,6 +225,15 @@ def projects_roots() -> list[str]:
     return roots
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves inside ``root`` (symlink-aware)."""
+    try:
+        Path(path).resolve().relative_to(Path(str(root)).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def _gateway_state_listener_base() -> Optional[str]:
     """api_server listener URL from ``<home>/gateway_state.json``, best-effort.
 
@@ -241,28 +250,19 @@ def _gateway_state_listener_base() -> Optional[str]:
         return None
 
 
-def _dotenv_value(key: str) -> str:
-    """Read ``KEY`` from ``<home>/.env`` (dotenv-style; never logged).
-
-    Returns "" when the file or key is missing. Values may be quoted; inline
-    comments after a space are stripped the way dotenv does.
-    """
-    path = _hermes_home() / ".env"
+def _hermes_secret(name: str) -> str:
+    """``name`` through Hermes's secret API — the sanctioned path the gateway
+    itself uses (profile secret scope, then the process env). Never parses
+    ``.env`` by hand; fails closed ("" not an exception) outside a Hermes
+    process and under active multiplexing without a scope."""
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            name, _, value = line.partition("=")
-            if name.strip() != key:
-                continue
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            return value.strip()
-    except OSError:
-        pass
-    return ""
+        from agent.secret_scope import get_secret  # type: ignore
+    except Exception:
+        return ""
+    try:
+        return (get_secret(name) or "").strip()
+    except Exception:  # UnscopedSecretError et al: no credential, never a crash
+        return ""
 
 
 def api_server_url() -> str:
@@ -281,16 +281,18 @@ def api_server_url() -> str:
 
 
 def api_server_key() -> str:
-    """Native chat lane credential: plugin settings, env, then the Hermes
-    home's own ``API_SERVER_KEY`` (.env). The derived value never leaves the
-    loopback calls and is never logged."""
+    """Native chat lane credential: the plugin's own ``api_server_key``
+    setting, the plugin's ``HERMES_API_SERVER_KEY`` env override, then
+    ``API_SERVER_KEY`` through Hermes's secret API
+    (``agent.secret_scope.get_secret`` — profile scope, then process env).
+    The derived value never leaves the loopback calls and is never logged."""
     from_config = _setting("api_server_key")
     if from_config:
         return from_config
     from_env = (os.environ.get("HERMES_API_SERVER_KEY") or "").strip()
     if from_env:
         return from_env
-    return _dotenv_value("API_SERVER_KEY")
+    return _hermes_secret("API_SERVER_KEY")
 
 
 # ---------------------------------------------------------------------------
@@ -890,6 +892,19 @@ def projects_select(body: SelectBody):
             "validation",
             "Not a hyperframes project (needs index.html with data-composition-id "
             "and node_modules/.bin/hyperframes)", retryable=False))
+    # Same confinement the tools enforce: the project's own
+    # node_modules/.bin/hyperframes runs on the host, so only dirs under a
+    # configured projects root may be selected.
+    roots = projects_roots()
+    resolved = Path(path).resolve()
+    if not any(_is_within(resolved, root) for root in roots):
+        raise HTTPException(status_code=422, detail=_error_detail(
+            "validation",
+            "Outside the configured projects_roots — add the dir (or its parent) "
+            "to plugins.entries.hermes-hyperframes.settings.projects_roots in "
+            f"config.yaml. Allowed roots: "
+            f"{', '.join(str(r) for r in roots) or '(none configured)'}",
+            retryable=False))
     kv_set("current_project", path)
     return {"ok": True, "current": path}
 
